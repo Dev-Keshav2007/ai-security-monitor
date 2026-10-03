@@ -1,12 +1,15 @@
 import cv2
 import time
 import math
+import os
+from datetime import datetime
 from ultralytics import YOLO
 
 
 def point_inside_zone(point, zone):
     x, y = point
     x1, y1, x2, y2 = zone
+
     return x1 <= x <= x2 and y1 <= y <= y2
 
 
@@ -15,6 +18,47 @@ def calculate_distance(point1, point2):
         (point1[0] - point2[0]) ** 2
         + (point1[1] - point2[1]) ** 2
     )
+
+
+def save_evidence(frame):
+    """Save one camera frame for human review."""
+
+    evidence_directory = "evidence"
+
+    os.makedirs(
+        evidence_directory,
+        exist_ok=True
+    )
+
+    timestamp = datetime.now().strftime(
+        "%Y-%m-%d_%H-%M-%S"
+    )
+
+    filename = (
+        f"possible_concealment_{timestamp}.jpg"
+    )
+
+    filepath = os.path.join(
+        evidence_directory,
+        filename
+    )
+
+    success = cv2.imwrite(
+        filepath,
+        frame
+    )
+
+    if success:
+        print(
+            f"EVIDENCE SAVED: {filepath}"
+        )
+        return filepath
+
+    print(
+        "ERROR: Evidence image could not be saved."
+    )
+
+    return None
 
 
 def start_monitor():
@@ -48,29 +92,39 @@ def start_monitor():
 
     near_body_start_time = None
     last_near_body_time = None
+
     product_was_near_body = False
+
+    # ---------------------------------------
+    # Evidence-image tracking
+    # ---------------------------------------
+
+    evidence_saved_for_event = False
+    saved_evidence_path = None
 
     # ---------------------------------------
     # Timing settings
     # ---------------------------------------
 
     shelf_confirmation_time = 1.0
+
     pickup_window = 3.0
+
     carry_confirmation_time = 0.8
 
-    # Bottle must remain near the body this
-    # long before it becomes valid evidence.
     near_body_confirmation_time = 0.7
 
-    # Ignore short object-detector failures.
+    # Ignore short YOLO detection failures.
     disappearance_threshold = 3.0
 
-    # How recently valid near-body evidence
-    # must have occurred before disappearance.
     near_body_memory = 2.0
 
     pickup_alert_frames = 0
     review_alert_frames = 0
+
+    # ---------------------------------------
+    # Camera
+    # ---------------------------------------
 
     camera = cv2.VideoCapture(0)
 
@@ -80,9 +134,12 @@ def start_monitor():
 
     print("Camera started.")
     print("Concealment monitoring active.")
+    print("Evidence capture active.")
     print("")
-    print("Important:")
-    print("Near-body evidence is only valid AFTER pickup.")
+    print(
+        "Near-body evidence is only valid "
+        "after pickup."
+    )
     print("")
     print("Press Q to stop.")
 
@@ -90,7 +147,9 @@ def start_monitor():
         success, frame = camera.read()
 
         if not success:
-            print("Error: Could not read camera frame.")
+            print(
+                "Error: Could not read camera frame."
+            )
             break
 
         current_time = time.time()
@@ -111,7 +170,9 @@ def start_monitor():
             verbose=False
         )
 
-        shelf_x1, shelf_y1, shelf_x2, shelf_y2 = shelf_zone
+        shelf_x1, shelf_y1, shelf_x2, shelf_y2 = (
+            shelf_zone
+        )
 
         bottle_detected = False
         bottle_in_shelf = False
@@ -138,7 +199,9 @@ def start_monitor():
                 class_id = int(box.cls[0])
                 confidence = float(box.conf[0])
 
-                object_name = object_model.names[class_id]
+                object_name = (
+                    object_model.names[class_id]
+                )
 
                 if object_name != "bottle":
                     continue
@@ -220,30 +283,40 @@ def start_monitor():
                 left_hip = keypoints[11]
                 right_hip = keypoints[12]
 
-                # --------------------------------
+                # -------------------------------
                 # Torso center
-                # --------------------------------
+                # -------------------------------
 
                 torso_points = []
 
-                for point in [
+                body_points = [
                     left_shoulder,
                     right_shoulder,
                     left_hip,
                     right_hip
-                ]:
+                ]
+
+                for point in body_points:
                     px = int(point[0])
                     py = int(point[1])
 
                     if px > 0 and py > 0:
-                        torso_points.append((px, py))
+                        torso_points.append(
+                            (px, py)
+                        )
 
                 if len(torso_points) >= 2:
                     torso_center = (
-                        sum(p[0] for p in torso_points)
+                        sum(
+                            p[0]
+                            for p in torso_points
+                        )
                         // len(torso_points),
 
-                        sum(p[1] for p in torso_points)
+                        sum(
+                            p[1]
+                            for p in torso_points
+                        )
                         // len(torso_points)
                     )
 
@@ -268,18 +341,23 @@ def start_monitor():
                         2
                     )
 
-                # --------------------------------
+                # -------------------------------
                 # Wrist detection
-                # --------------------------------
+                # -------------------------------
 
-                for wrist in [
+                wrists = [
                     left_wrist,
                     right_wrist
-                ]:
+                ]
+
+                for wrist in wrists:
                     wrist_x = int(wrist[0])
                     wrist_y = int(wrist[1])
 
-                    if wrist_x <= 0 or wrist_y <= 0:
+                    if (
+                        wrist_x <= 0
+                        or wrist_y <= 0
+                    ):
                         continue
 
                     wrist_point = (
@@ -292,9 +370,17 @@ def start_monitor():
                         shelf_zone
                     ):
                         hand_in_shelf = True
-                        wrist_color = (0, 0, 255)
+                        wrist_color = (
+                            0,
+                            0,
+                            255
+                        )
                     else:
-                        wrist_color = (0, 255, 255)
+                        wrist_color = (
+                            0,
+                            255,
+                            255
+                        )
 
                     cv2.circle(
                         frame,
@@ -347,30 +433,27 @@ def start_monitor():
         # =======================================
         # VALID NEAR-BODY EVIDENCE
         # =======================================
-        #
-        # IMPORTANT FIX:
-        #
-        # Near-body evidence is ONLY allowed
-        # after a real pickup has happened.
-        #
-        # A bottle near someone's body while
-        # WAITING or ON_SHELF does not count.
-        # =======================================
 
-        evidence_allowed = product_state in [
-            "PICKED_UP",
-            "CARRIED"
-        ]
+        evidence_allowed = (
+            product_state
+            in [
+                "PICKED_UP",
+                "CARRIED"
+            ]
+        )
 
         if (
             evidence_allowed
             and product_currently_near_body
         ):
             if near_body_start_time is None:
-                near_body_start_time = current_time
+                near_body_start_time = (
+                    current_time
+                )
 
             near_body_duration = (
-                current_time - near_body_start_time
+                current_time
+                - near_body_start_time
             )
 
             if (
@@ -379,11 +462,14 @@ def start_monitor():
             ):
                 if not product_was_near_body:
                     print(
-                        "EVIDENCE: Product confirmed near body."
+                        "EVIDENCE: Product "
+                        "confirmed near body."
                     )
 
                 product_was_near_body = True
-                last_near_body_time = current_time
+                last_near_body_time = (
+                    current_time
+                )
 
         else:
             near_body_start_time = None
@@ -397,27 +483,32 @@ def start_monitor():
         # ---------------------------------------
 
         if product_state == "WAITING":
-            shelf_label = "WAITING FOR PRODUCT"
+            shelf_label = (
+                "WAITING FOR PRODUCT"
+            )
 
-            # No concealment evidence should
-            # survive while waiting.
             product_was_near_body = False
             near_body_start_time = None
             last_near_body_time = None
 
             if bottle_in_shelf:
                 if shelf_entry_time is None:
-                    shelf_entry_time = current_time
+                    shelf_entry_time = (
+                        current_time
+                    )
 
                 if (
-                    current_time - shelf_entry_time
+                    current_time
+                    - shelf_entry_time
                     >= shelf_confirmation_time
                 ):
                     product_state = "ON_SHELF"
+
                     shelf_entry_time = None
 
                     print(
-                        "STATE: Product confirmed on shelf."
+                        "STATE: Product "
+                        "confirmed on shelf."
                     )
 
             else:
@@ -431,17 +522,27 @@ def start_monitor():
             shelf_color = (0, 255, 0)
             shelf_label = "PRODUCT READY"
 
-            # Clear old event evidence.
             product_was_near_body = False
             near_body_start_time = None
             last_near_body_time = None
 
+            # A returned/new product means the
+            # next pickup is a new event.
+            evidence_saved_for_event = False
+            saved_evidence_path = None
+
             if hand_in_shelf:
-                product_state = "INTERACTION"
-                interaction_time = current_time
+                product_state = (
+                    "INTERACTION"
+                )
+
+                interaction_time = (
+                    current_time
+                )
 
                 print(
-                    "STATE: Hand-product interaction."
+                    "STATE: Hand-product "
+                    "interaction."
                 )
 
         # ---------------------------------------
@@ -449,34 +550,51 @@ def start_monitor():
         # ---------------------------------------
 
         elif product_state == "INTERACTION":
-            shelf_color = (0, 165, 255)
-            shelf_label = "HAND-PRODUCT INTERACTION"
+            shelf_color = (
+                0,
+                165,
+                255
+            )
+
+            shelf_label = (
+                "HAND-PRODUCT INTERACTION"
+            )
 
             interaction_age = (
-                current_time - interaction_time
+                current_time
+                - interaction_time
             )
 
             if (
                 bottle_detected
                 and not bottle_in_shelf
-                and interaction_age <= pickup_window
+                and interaction_age
+                <= pickup_window
             ):
                 product_state = "PICKED_UP"
+
                 pickup_time = current_time
 
-                # New event = clean evidence.
                 product_was_near_body = False
                 near_body_start_time = None
                 last_near_body_time = None
 
+                evidence_saved_for_event = False
+                saved_evidence_path = None
+
                 pickup_alert_frames = 100
 
                 print(
-                    "EVENT: Product pickup detected."
+                    "EVENT: Product pickup "
+                    "detected."
                 )
 
-            elif interaction_age > pickup_window:
+            elif (
+                interaction_age
+                > pickup_window
+            ):
                 product_state = "ON_SHELF"
+
                 interaction_time = None
 
                 print(
@@ -488,46 +606,67 @@ def start_monitor():
         # ---------------------------------------
 
         elif product_state == "PICKED_UP":
-            shelf_color = (0, 165, 255)
-            shelf_label = "PICKUP CONFIRMED"
+            shelf_color = (
+                0,
+                165,
+                255
+            )
 
+            shelf_label = (
+                "PICKUP CONFIRMED"
+            )
+
+            # Product returned immediately.
             if bottle_in_shelf:
                 if shelf_entry_time is None:
-                    shelf_entry_time = current_time
+                    shelf_entry_time = (
+                        current_time
+                    )
 
                 if (
-                    current_time - shelf_entry_time
+                    current_time
+                    - shelf_entry_time
                     >= shelf_confirmation_time
                 ):
-                    product_state = "ON_SHELF"
+                    product_state = (
+                        "ON_SHELF"
+                    )
 
                     shelf_entry_time = None
                     pickup_time = None
 
-                    product_was_near_body = False
+                    product_was_near_body = (
+                        False
+                    )
+
                     near_body_start_time = None
                     last_near_body_time = None
 
                     print(
-                        "STATE: Product returned to shelf."
+                        "STATE: Product returned "
+                        "to shelf."
                     )
 
             else:
                 shelf_entry_time = None
 
+            # Confirm that the product remains
+            # visible outside the shelf.
             if (
                 bottle_detected
                 and not bottle_in_shelf
                 and pickup_time is not None
             ):
                 if (
-                    current_time - pickup_time
+                    current_time
+                    - pickup_time
                     >= carry_confirmation_time
                 ):
                     product_state = "CARRIED"
 
                     print(
-                        "STATE: Product is being carried."
+                        "STATE: Product is "
+                        "being carried."
                     )
 
         # ---------------------------------------
@@ -535,45 +674,68 @@ def start_monitor():
         # ---------------------------------------
 
         elif product_state == "CARRIED":
-            shelf_color = (0, 165, 255)
-            shelf_label = "PRODUCT CARRIED"
+            shelf_color = (
+                0,
+                165,
+                255
+            )
 
-            # -----------------------------------
-            # Returned to shelf
-            # -----------------------------------
+            shelf_label = (
+                "PRODUCT CARRIED"
+            )
+
+            # -------------------------------
+            # Product returned
+            # -------------------------------
 
             if bottle_in_shelf:
                 if shelf_entry_time is None:
-                    shelf_entry_time = current_time
+                    shelf_entry_time = (
+                        current_time
+                    )
 
                 if (
-                    current_time - shelf_entry_time
+                    current_time
+                    - shelf_entry_time
                     >= shelf_confirmation_time
                 ):
-                    product_state = "ON_SHELF"
+                    product_state = (
+                        "ON_SHELF"
+                    )
 
                     shelf_entry_time = None
                     interaction_time = None
                     pickup_time = None
 
-                    product_was_near_body = False
+                    product_was_near_body = (
+                        False
+                    )
+
                     near_body_start_time = None
                     last_near_body_time = None
 
+                    evidence_saved_for_event = (
+                        False
+                    )
+
+                    saved_evidence_path = None
+
                     print(
-                        "STATE: Product returned to shelf."
+                        "STATE: Product returned "
+                        "to shelf."
                     )
 
             else:
                 shelf_entry_time = None
 
-            # -----------------------------------
+            # -------------------------------
             # Product disappeared
-            # -----------------------------------
+            # -------------------------------
 
             if (
                 not bottle_detected
-                and last_product_seen_time is not None
+                and last_product_seen_time
+                is not None
             ):
                 missing_time = (
                     current_time
@@ -582,7 +744,10 @@ def start_monitor():
 
                 recent_body_evidence = False
 
-                if last_near_body_time is not None:
+                if (
+                    last_near_body_time
+                    is not None
+                ):
                     evidence_age = (
                         current_time
                         - last_near_body_time
@@ -595,7 +760,9 @@ def start_monitor():
                             + near_body_memory
                         )
                     ):
-                        recent_body_evidence = True
+                        recent_body_evidence = (
+                            True
+                        )
 
                 if (
                     missing_time
@@ -604,18 +771,45 @@ def start_monitor():
                     and recent_body_evidence
                 ):
                     product_state = "REVIEW"
+
                     review_alert_frames = 180
 
                     print(
-                        "ALERT: Possible concealment - review footage."
+                        "ALERT: Possible "
+                        "concealment - "
+                        "review footage."
                     )
+
+                    # -----------------------
+                    # SAVE EVIDENCE
+                    # -----------------------
+
+                    if not evidence_saved_for_event:
+                        saved_evidence_path = (
+                            save_evidence(
+                                frame.copy()
+                            )
+                        )
+
+                        if (
+                            saved_evidence_path
+                            is not None
+                        ):
+                            evidence_saved_for_event = (
+                                True
+                            )
 
         # ---------------------------------------
         # REVIEW
         # ---------------------------------------
 
         elif product_state == "REVIEW":
-            shelf_color = (0, 0, 255)
+            shelf_color = (
+                0,
+                0,
+                255
+            )
+
             shelf_label = "REVIEW EVENT"
 
             if bottle_detected:
@@ -679,8 +873,10 @@ def start_monitor():
 
         if (
             not bottle_detected
-            and last_product_position is not None
-            and product_state in [
+            and last_product_position
+            is not None
+            and product_state
+            in [
                 "PICKED_UP",
                 "CARRIED"
             ]
@@ -697,7 +893,8 @@ def start_monitor():
                 frame,
                 "LAST SEEN",
                 (
-                    last_product_position[0] + 10,
+                    last_product_position[0]
+                    + 10,
                     last_product_position[1]
                 ),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -712,8 +909,14 @@ def start_monitor():
 
         cv2.rectangle(
             frame,
-            (shelf_x1, shelf_y1),
-            (shelf_x2, shelf_y2),
+            (
+                shelf_x1,
+                shelf_y1
+            ),
+            (
+                shelf_x2,
+                shelf_y2
+            ),
             shelf_color,
             2
         )
@@ -723,7 +926,10 @@ def start_monitor():
             shelf_label,
             (
                 shelf_x1,
-                max(shelf_y1 - 10, 20)
+                max(
+                    shelf_y1 - 10,
+                    20
+                )
             ),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.60,
@@ -732,11 +938,15 @@ def start_monitor():
         )
 
         cv2.imshow(
-            "AI Security Monitor - Concealment Monitor",
+            "AI Security Monitor - "
+            "Concealment Monitor",
             frame
         )
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        if (
+            cv2.waitKey(1) & 0xFF
+            == ord("q")
+        ):
             break
 
     camera.release()
