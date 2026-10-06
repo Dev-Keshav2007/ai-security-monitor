@@ -6,6 +6,8 @@ from datetime import datetime
 from collections import deque
 from ultralytics import YOLO
 
+from telegram_alert import send_message, send_photo, send_video
+
 
 def point_inside_zone(point, zone):
     x, y = point
@@ -160,6 +162,7 @@ def start_monitor():
     print("Concealment monitoring active.")
     print("Evidence image capture active.")
     print("Rolling video buffer active.")
+    print("Telegram alerts active.")
     print("")
     print("Near-body evidence is only valid after pickup.")
     print("")
@@ -190,9 +193,7 @@ def start_monitor():
             (current_time, raw_frame.copy())
         )
 
-        cutoff_time = (
-            current_time - pre_event_seconds
-        )
+        cutoff_time = current_time - pre_event_seconds
 
         while (
             video_buffer
@@ -206,6 +207,8 @@ def start_monitor():
             event_frames.append(raw_frame.copy())
 
             if current_time >= event_end_time:
+                saved_video_path = None
+
                 if event_frames:
                     height, width = event_frames[0].shape[:2]
 
@@ -240,11 +243,23 @@ def start_monitor():
                         )
                     )
 
-                    save_video_clip(
+                    saved_video_path = save_video_clip(
                         event_frames,
                         frame_size,
                         estimated_fps,
                         event_timestamp
+                    )
+
+                # Send the finished video only after
+                # the MP4 has been written to disk.
+                if saved_video_path:
+                    send_video(
+                        saved_video_path,
+                        caption=(
+                            "🎥 AI SECURITY EVIDENCE\n\n"
+                            "Possible concealment event.\n"
+                            "Review the attached evidence clip."
+                        )
                     )
 
                 recording_event = False
@@ -297,9 +312,7 @@ def start_monitor():
                 class_id = int(box.cls[0])
                 confidence = float(box.conf[0])
 
-                object_name = (
-                    object_model.names[class_id]
-                )
+                object_name = object_model.names[class_id]
 
                 if object_name != "bottle":
                     continue
@@ -537,9 +550,7 @@ def start_monitor():
             and product_currently_near_body
         ):
             if near_body_start_time is None:
-                near_body_start_time = (
-                    current_time
-                )
+                near_body_start_time = current_time
 
             near_body_duration = (
                 current_time
@@ -557,9 +568,7 @@ def start_monitor():
                     )
 
                 product_was_near_body = True
-                last_near_body_time = (
-                    current_time
-                )
+                last_near_body_time = current_time
 
         else:
             near_body_start_time = None
@@ -617,9 +626,7 @@ def start_monitor():
 
         elif product_state == "INTERACTION":
             shelf_color = (0, 165, 255)
-            shelf_label = (
-                "HAND-PRODUCT INTERACTION"
-            )
+            shelf_label = "HAND-PRODUCT INTERACTION"
 
             interaction_age = (
                 current_time - interaction_time
@@ -628,8 +635,7 @@ def start_monitor():
             if (
                 bottle_detected
                 and not bottle_in_shelf
-                and interaction_age
-                <= pickup_window
+                and interaction_age <= pickup_window
             ):
                 product_state = "PICKED_UP"
                 pickup_time = current_time
@@ -739,8 +745,7 @@ def start_monitor():
 
             if (
                 not bottle_detected
-                and last_product_seen_time
-                is not None
+                and last_product_seen_time is not None
             ):
                 missing_time = (
                     current_time
@@ -765,8 +770,7 @@ def start_monitor():
                         recent_body_evidence = True
 
                 if (
-                    missing_time
-                    >= disappearance_threshold
+                    missing_time >= disappearance_threshold
                     and product_was_near_body
                     and recent_body_evidence
                 ):
@@ -784,9 +788,7 @@ def start_monitor():
                     # ---------------------------
 
                     if not evidence_saved_for_event:
-                        event_timestamp = (
-                            create_timestamp()
-                        )
+                        event_timestamp = create_timestamp()
 
                         saved_evidence_path = (
                             save_evidence_image(
@@ -797,6 +799,23 @@ def start_monitor():
 
                         if saved_evidence_path:
                             evidence_saved_for_event = True
+
+                            # Send immediate Telegram warning.
+                            send_message(
+                                "⚠️ AI SECURITY ALERT\n\n"
+                                "Possible concealment detected.\n"
+                                "Review required."
+                            )
+
+                            # Send the evidence image immediately.
+                            send_photo(
+                                saved_evidence_path,
+                                caption=(
+                                    "📸 AI SECURITY EVIDENCE\n\n"
+                                    "Possible concealment event.\n"
+                                    "Review the attached image."
+                                )
+                            )
 
                         # -----------------------
                         # START EVENT CLIP
@@ -955,8 +974,7 @@ def start_monitor():
             )
 
         cv2.imshow(
-            "AI Security Monitor - "
-            "Concealment Monitor",
+            "AI Security Monitor - Concealment Monitor",
             frame
         )
 
